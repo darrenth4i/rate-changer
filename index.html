@@ -323,11 +323,15 @@ const Core = (() => {
     const outLen = Math.ceil(n / speed);
     const win = new Float32Array(W);
     for (let i = 0; i < W; i++) win[i] = 0.5 - 0.5 * Math.cos(2 * Math.PI * i / W);
-    const mono = new Float32Array(n);
-    for (const c of chs) for (let i = 0; i < n; i++) mono[i] += c[i] / nc;
-    const md = new Float32Array(Math.ceil(n / D));
-    for (let i = 0; i < n; i++) md[(i / D) | 0] += mono[i] / D;
-    const at = (a, i) => (i >= 0 && i < a.length) ? a[i] : 0;
+    // Zero-padded copies so the hot loops need no bounds checks.
+    const P = W + delta, PL = n + 3 * W + 2 * delta + D * 4;
+    const pad = src => { const a = new Float32Array(P + PL); a.set(src, P); return a; };
+    const src = chs.map(pad);
+    const mono = new Float32Array(P + PL);
+    for (const c of chs) for (let i = 0; i < n; i++) mono[P + i] += c[i] / nc;
+    const PD = Math.ceil(P / D) + 2;
+    const md = new Float32Array(PD + Math.ceil(PL / D) + 4);
+    for (let i = 0; i < n; i++) md[PD + ((i / D) | 0)] += mono[P + i] / D;
     const out = chs.map(() => new Float32Array(outLen + W));
     const wsum = new Float32Array(outLen + W);
     const Ha = H * speed, frames = Math.ceil(outLen / H) + 1;
@@ -338,29 +342,31 @@ const Core = (() => {
       let pos = nominal;
       if (k > 0) {
         const target = prev + H; // where a seamless continuation of the last frame would start
-        const tb = Math.round(target / D), nb = Math.round(nominal / D);
+        const tb = PD + Math.round(target / D), nb = PD + Math.round(nominal / D);
         let best = -Infinity, bd = 0;
         for (let t = 0; t <= 2 * R; t++) {          // coarse search, offsets ordered 0, +1, -1, +2...
           const dd = (t & 1) ? (t + 1) >> 1 : -(t >> 1);
+          const b0 = nb + dd;
           let s = 0, e = 0;
-          for (let j = 0; j < L; j++) { const x = at(md, nb + dd + j); s += x * at(md, tb + j); e += x * x; }
+          for (let j = 0; j < L; j++) { const x = md[b0 + j]; s += x * md[tb + j]; e += x * x; }
           const sc = e > 1e-12 ? s / Math.sqrt(e) : 0;
           if (sc > best) { best = sc; bd = dd; }
         }
-        const c0 = nominal + bd * D; best = -Infinity; pos = c0;
+        const c0 = nominal + bd * D, tp = P + target; best = -Infinity; pos = c0;
         for (let t = 0; t <= 2 * D; t++) {          // fine search at full rate
           const d = c0 + ((t & 1) ? (t + 1) >> 1 : -(t >> 1));
           if (d < nominal - delta || d > nominal + delta) continue;
+          const dp = P + d;
           let s = 0, e = 0;
-          for (let j = 0; j < H; j++) { const x = at(mono, d + j); s += x * at(mono, target + j); e += x * x; }
+          for (let j = 0; j < H; j++) { const x = mono[dp + j]; s += x * mono[tp + j]; e += x * x; }
           const sc = e > 1e-12 ? s / Math.sqrt(e) : 0;
           if (sc > best) { best = sc; pos = d; }
         }
       }
-      const o = k * H;
+      const o = k * H, sp = P + pos;
       for (let c = 0; c < nc; c++) {
-        const src = chs[c], dst = out[c];
-        for (let i = 0; i < W; i++) dst[o + i] += at(src, pos + i) * win[i];
+        const s = src[c], dst = out[c];
+        for (let i = 0; i < W; i++) dst[o + i] += s[sp + i] * win[i];
       }
       for (let i = 0; i < W; i++) wsum[o + i] += win[i];
       prev = pos;
@@ -370,7 +376,28 @@ const Core = (() => {
       const dst = out[c];
       for (let i = 0; i < outLen; i++) if (wsum[i] > 1e-3) dst[i] /= wsum[i];
     }
-    return out.map(a => a.slice(0, outLen));
+    return out.map(a => a.subarray(0, outLen));
+  }
+
+  // ---------- MP3 (lamejs passed in so this works in a worker too) ----------
+  async function encodeMp3(lame, chs, sr, kbps, onProg) {
+    // lamejs writes no gapless header, so decoders would play it ~1105 samples late.
+    // Trim that much from the front to keep the audio in sync with the chart.
+    const skip = 1105;
+    chs = chs.map(c => c.subarray(Math.min(skip, c.length)));
+    const nc = chs.length, n = chs[0].length, enc = new lame.Mp3Encoder(nc, sr, kbps);
+    const parts = [], block = 1152 * 32;
+    const i16 = (f, a, b) => { const o = new Int16Array(b - a); for (let i = a; i < b; i++) { const v = Math.max(-1, Math.min(1, f[i])); o[i - a] = v < 0 ? v * 32768 : v * 32767; } return o; };
+    for (let i = 0, k = 0; i < n; i += block, k++) {
+      const e = Math.min(n, i + block);
+      const out = nc > 1 ? enc.encodeBuffer(i16(chs[0], i, e), i16(chs[1], i, e)) : enc.encodeBuffer(i16(chs[0], i, e));
+      if (out.length) parts.push(new Uint8Array(out));
+      if (k % 8 === 0) { if (onProg) onProg(i / n); await tick(); }
+    }
+    const end = enc.flush(); if (end.length) parts.push(new Uint8Array(end));
+    const total = parts.reduce((s, p) => s + p.length, 0), res = new Uint8Array(total);
+    let o = 0; for (const p of parts) { res.set(p, o); o += p.length; }
+    return res;
   }
 
   // ---------- WAV ----------
@@ -390,7 +417,7 @@ const Core = (() => {
   }
 
   return { crc32, readZip, entryData, storedEntry, buildZip, fmtSpeed, dirOf, stripBom,
-           mcInfo, transformMc, osuInfo, transformOsu, wsola, encodeWav, tick };
+           mcInfo, transformMc, osuInfo, transformOsu, wsola, encodeMp3, encodeWav, tick };
 })();
 if (typeof module !== 'undefined') module.exports = Core;
 </script>
@@ -399,12 +426,16 @@ if (typeof module !== 'undefined') module.exports = Core;
 (() => {
   const $ = id => document.getElementById(id);
   const DEFAULT_SPEEDS = [0.5, 0.6, 0.65, 0.7, 0.75, 0.8, 0.85, 0.9, 0.95, 1.05, 1.1, 1.15, 1.2, 1.25, 1.3, 1.35, 1.4, 1.5, 1.6, 1.7, 1.8, 2.0];
+  const LAME_URL = 'https://cdn.jsdelivr.net/npm/lamejs@1.2.1/lame.min.js';
+  // How many speeds to process at once. Each job holds a few copies of the song in memory
+  // (~350 MB for a 3-minute track), so this stays low to avoid Safari reloading the tab.
+  const MAX_PARALLEL = 2;
   const state = { file: null, entries: [], charts: [], speeds: new Set(), allSpeeds: [...DEFAULT_SPEEDS], resultBlob: null, resultName: '' };
 
   // ----- MP3 encoder (lamejs) loaded from CDN; WAV works without it -----
   let lameReady = false;
   const s = document.createElement('script');
-  s.src = 'https://cdn.jsdelivr.net/npm/lamejs@1.2.1/lame.min.js';
+  s.src = LAME_URL;
   s.onload = () => { lameReady = !!window.lamejs; $('mp3note').textContent = ''; };
   s.onerror = () => {
     $('mp3note').textContent = 'MP3 encoder could not load (offline?). Falling back to WAV.';
@@ -499,69 +530,115 @@ if (typeof module !== 'undefined') module.exports = Core;
     return audio.chs.map((_, i) => r.getChannelData(i).slice());
   }
 
-  async function encodeMp3(chs, sr, kbps, onProg) {
-    // lamejs writes no gapless header, so decoders would play it ~1105 samples late.
-    // Trim that much from the front to keep the audio in sync with the chart.
-    const skip = 1105;
-    chs = chs.map(c => c.subarray(Math.min(skip, c.length)));
-    const nc = chs.length, n = chs[0].length, enc = new lamejs.Mp3Encoder(nc, sr, kbps);
-    const parts = [], block = 1152 * 32;
-    const i16 = (f, a, b) => { const o = new Int16Array(b - a); for (let i = a; i < b; i++) { const v = Math.max(-1, Math.min(1, f[i])); o[i - a] = v < 0 ? v * 32768 : v * 32767; } return o; };
-    for (let i = 0, k = 0; i < n; i += block, k++) {
-      const e = Math.min(n, i + block);
-      const out = nc > 1 ? enc.encodeBuffer(i16(chs[0], i, e), i16(chs[1], i, e)) : enc.encodeBuffer(i16(chs[0], i, e));
-      if (out.length) parts.push(new Uint8Array(out));
-      if (k % 8 === 0) { onProg(i / n); await Core.tick(); }
-    }
-    const end = enc.flush(); if (end.length) parts.push(new Uint8Array(end));
-    const total = parts.reduce((s, p) => s + p.length, 0), res = new Uint8Array(total);
-    let o = 0; for (const p of parts) { res.set(p, o); o += p.length; }
-    return res;
+  // ----- Background workers: each runs the stretch + encode for one speed -----
+  const WORKER_SRC = $('core').textContent + `
+self.onmessage = async ev => {
+  const j = ev.data;
+  try {
+    if (j.mp3 && !self.lamejs) importScripts(${JSON.stringify(LAME_URL)});
+    const chs = await Core.wsola(j.chs, j.sr, j.speed, p => self.postMessage({ p: p * 0.5 }));
+    const bytes = j.mp3 ? await Core.encodeMp3(self.lamejs, chs, j.sr, j.kbps, p => self.postMessage({ p: 0.5 + p * 0.5 }))
+                        : Core.encodeWav(chs, j.sr);
+    self.postMessage({ done: true, bytes }, [bytes.buffer]);
+  } catch (e) { self.postMessage({ error: String((e && e.message) || e) }); }
+};`;
+
+  function makeWorkers(n) {
+    if (!window.Worker || n < 1) return [];
+    try {
+      const url = URL.createObjectURL(new Blob([WORKER_SRC], { type: 'text/javascript' }));
+      const ws = [];
+      for (let i = 0; i < n; i++) ws.push(new Worker(url));
+      setTimeout(() => URL.revokeObjectURL(url), 10000);
+      return ws;
+    } catch (e) { console.warn('Workers unavailable, using main thread', e); return []; }
+  }
+
+  function runInWorker(w, task, onProg) {
+    return new Promise((resolve, reject) => {
+      w.onmessage = ev => { const m = ev.data; if (m.error) reject(new Error(m.error)); else if (m.done) resolve(m.bytes); else onProg(m.p); };
+      w.onerror = e => { e.preventDefault(); reject(new Error(e.message || 'worker error')); };
+      w.postMessage(task);
+    });
+  }
+
+  async function runLocal(task, onProg) {
+    const chs = await Core.wsola(task.chs, task.sr, task.speed, p => onProg(p * 0.5));
+    return task.mp3 ? Core.encodeMp3(window.lamejs, chs, task.sr, task.kbps, p => onProg(0.5 + p * 0.5))
+                    : Core.encodeWav(chs, task.sr);
   }
 
   $('go').onclick = async () => {
     const charts = state.charts.filter(c => c.on), speeds = [...state.speeds].sort((a, b) => a - b);
     let fmt = $('format').value;
     if (fmt.startsWith('mp3') && !lameReady) { fmt = 'wav'; $('format').value = 'wav'; }
-    const ext = fmt === 'wav' ? 'wav' : 'mp3', kbps = fmt === 'wav' ? 0 : +fmt.split('-')[1];
+    const mp3 = fmt !== 'wav', ext = mp3 ? 'mp3' : 'wav', kbps = mp3 ? +fmt.split('-')[1] : 0;
     const keepPitch = $('keepPitch').checked;
     $('go').disabled = true; $('result').style.display = 'none';
     const byName = new Map(state.entries.map(e => [e.name.toLowerCase(), e]));
     const used = new Set(state.entries.map(e => e.name.toLowerCase()));
     const uniq = name => { let n = name, i = 2; while (used.has(n.toLowerCase())) n = name.replace(/(\.[^.]+)$/, `_${i++}$1`); used.add(n.toLowerCase()); return n; };
-    const decoded = new Map(), made = new Map(), added = [];
-    const steps = charts.length * speeds.length; let step = 0;
+    let workers = [];
     try {
-      for (const sp of speeds) {
-        for (const c of charts) {
-          const label = `${c.version} ×${Core.fmtSpeed(sp)}`;
-          const dir = Core.dirOf(c.entry.name);
-          if (!c.audio) throw new Error(`${c.version}: chart has no audio file listed.`);
-          const audioPath = dir + c.audio, key = audioPath.toLowerCase() + '|' + sp;
-          const ae = byName.get(audioPath.toLowerCase());
-          if (!ae) throw new Error(`Audio file "${audioPath}" is missing from the archive.`);
-          let newAudio = made.get(key);
-          if (!newAudio) {
-            const sub = (p, w0, w) => progress((step + w0 + p * w) / steps);
-            if (!decoded.has(ae.name)) { status(`Decoding ${c.audio}…`); decoded.set(ae.name, await decodeAudio(await Core.entryData(ae))); }
-            const audio = decoded.get(ae.name);
-            status(`Stretching audio for ${label}…`);
-            const chs = keepPitch ? await Core.wsola(audio.chs, audio.sr, sp, p => sub(p, 0, 0.5)) : await resample(audio, sp);
-            status(`Encoding ${ext.toUpperCase()} for ${label}…`);
-            const bytes = ext === 'wav' ? Core.encodeWav(chs, audio.sr) : await encodeMp3(chs, audio.sr, kbps, p => sub(p, 0.5, 0.5));
-            const base = c.audio.replace(/^.*\//, '').replace(/\.[^.]+$/, '');
-            const relName = uniq(dir + `${base}_x${Core.fmtSpeed(sp)}.${ext}`).slice(dir.length);
-            added.push(Core.storedEntry(dir + relName, bytes));
-            made.set(key, newAudio = relName);
-          }
-          const chartBase = c.entry.name.slice(dir.length).replace(/\.[^.]+$/, '');
-          const chartExt = c.type === 'mc' ? 'mc' : 'osu';
-          const chartName = uniq(dir + `${chartBase}_x${Core.fmtSpeed(sp)}.${chartExt}`);
-          const text = c.type === 'mc' ? JSON.stringify(Core.transformMc(c.json, sp, newAudio)) : Core.transformOsu(c.text, sp, newAudio);
-          added.push(Core.storedEntry(chartName, new TextEncoder().encode(text)));
-          step++; progress(step / steps);
+      // 1. Plan one audio job per (audio file, speed). Difficulties sharing a song share the job.
+      const jobs = [], jobByKey = new Map();
+      for (const c of charts) {
+        if (!c.audio) throw new Error(`${c.version}: chart has no audio file listed.`);
+        c.dir = Core.dirOf(c.entry.name);
+        c.ae = byName.get((c.dir + c.audio).toLowerCase());
+        if (!c.ae) throw new Error(`Audio file "${c.dir + c.audio}" is missing from the archive.`);
+        for (const sp of speeds) {
+          const key = c.ae.name + '|' + sp;
+          if (jobByKey.has(key)) continue;
+          const base = c.audio.replace(/^.*\//, '').replace(/\.[^.]+$/, '');
+          const path = uniq(c.dir + `${base}_x${Core.fmtSpeed(sp)}.${ext}`);
+          const job = { id: jobs.length, ae: c.ae, sp, path, rel: path.slice(c.dir.length), bytes: null };
+          jobs.push(job); jobByKey.set(key, job);
         }
       }
+
+      // 2. Decode each song once.
+      const decoded = new Map();
+      for (const ae of new Set(jobs.map(j => j.ae))) {
+        status(`Decoding ${ae.name}…`);
+        decoded.set(ae, await decodeAudio(await Core.entryData(ae)));
+      }
+
+      // 3. Stretch + encode, several speeds at once.
+      workers = makeWorkers(Math.min(MAX_PARALLEL, jobs.length));
+      const prog = new Float64Array(jobs.length);
+      const show = () => progress(prog.reduce((s, v) => s + v, 0) / jobs.length);
+      let next = 0, done = 0;
+      const plural = jobs.length === 1 ? '' : 's';
+      status(`Processing ${jobs.length} audio file${plural}${workers.length > 1 ? `, ${workers.length} at a time` : ''}…`);
+      const lane = async w => {
+        while (next < jobs.length) {
+          const j = jobs[next++], audio = decoded.get(j.ae);
+          const chs = keepPitch ? audio.chs : await resample(audio, j.sp); // resampling needs the main thread
+          const task = { chs, sr: audio.sr, speed: keepPitch ? j.sp : 1, mp3, kbps };
+          const onP = p => { prog[j.id] = p; show(); };
+          if (w) {
+            try { j.bytes = await runInWorker(w, task, onP); }
+            catch (e) { console.warn('Worker failed, finishing on main thread:', e); w.terminate(); w = null; }
+          }
+          if (!j.bytes) j.bytes = await runLocal(task, onP);
+          prog[j.id] = 1; show();
+          status(`Processed ${++done} of ${jobs.length} audio file${plural}…`);
+        }
+      };
+      await Promise.all(workers.length ? workers.map(lane) : [lane(null)]);
+
+      // 4. Write the new charts.
+      const added = jobs.map(j => Core.storedEntry(j.path, j.bytes));
+      for (const sp of speeds) for (const c of charts) {
+        const j = jobByKey.get(c.ae.name + '|' + sp);
+        const chartBase = c.entry.name.slice(c.dir.length).replace(/\.[^.]+$/, '');
+        const chartName = uniq(c.dir + `${chartBase}_x${Core.fmtSpeed(sp)}.${c.type}`);
+        const text = c.type === 'mc' ? JSON.stringify(Core.transformMc(c.json, sp, j.rel)) : Core.transformOsu(c.text, sp, j.rel);
+        added.push(Core.storedEntry(chartName, new TextEncoder().encode(text)));
+      }
+      const steps = charts.length * speeds.length;
+
       status('Packing…');
       const keep = state.entries.filter(e => !e.isDir);
       const parts = Core.buildZip([...keep, ...added]);
@@ -578,15 +655,14 @@ if (typeof module !== 'undefined') module.exports = Core;
       $('result').scrollIntoView({ behavior: 'smooth' });
     } catch (err) {
       console.error(err); status('Failed: ' + err.message, true); progress(null);
-    } finally { $('go').disabled = false; }
+    } finally {
+      for (const w of workers) w.terminate();
+      $('go').disabled = false;
+    }
   };
 
   $('share').onclick = async () => {
-    // No explicit type, so iOS identifies the file by its .mcz/.osz extension (lets Malody/osu! show up).
-    // Fall back to a generic type if Safari refuses to share an untyped file.
-    let file = new File([state.resultBlob], state.resultName);
-    if (navigator.canShare && !navigator.canShare({ files: [file] }))
-      file = new File([state.resultBlob], state.resultName, { type: 'application/octet-stream' });
+    const file = new File([state.resultBlob], state.resultName, { type: 'application/octet-stream' });
     if (navigator.canShare && navigator.canShare({ files: [file] })) {
       try { await navigator.share({ files: [file] }); } catch (e) { if (e.name !== 'AbortError') status('Share failed: ' + e.message, true); }
     } else { $('download').click(); }

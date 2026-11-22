@@ -582,7 +582,11 @@ if (typeof module !== 'undefined') module.exports = Core;
   };
 
   $('share').onclick = async () => {
-    const file = new File([state.resultBlob], state.resultName, { type: 'application/octet-stream' });
+    // No explicit type, so iOS identifies the file by its .mcz/.osz extension (lets Malody/osu! show up).
+    // Fall back to a generic type if Safari refuses to share an untyped file.
+    let file = new File([state.resultBlob], state.resultName);
+    if (navigator.canShare && !navigator.canShare({ files: [file] }))
+      file = new File([state.resultBlob], state.resultName, { type: 'application/octet-stream' });
     if (navigator.canShare && navigator.canShare({ files: [file] })) {
       try { await navigator.share({ files: [file] }); } catch (e) { if (e.name !== 'AbortError') status('Share failed: ' + e.message, true); }
     } else { $('download').click(); }

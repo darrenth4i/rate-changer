@@ -1,0 +1,595 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-title" content="Rate Changer">
+<title>Beatmap Rate Changer</title>
+<style>
+  :root { color-scheme: light dark; --bg:#f4f2ee; --card:#fff; --ink:#1d1b18; --mute:#77716a; --line:#e3ded6; --acc:#d9480f; --acc-ink:#fff; --chip:#efebe5; }
+  @media (prefers-color-scheme: dark) { :root { --bg:#141312; --card:#1e1d1b; --ink:#f1eee9; --mute:#9a948c; --line:#33302c; --chip:#2a2825; } }
+  * { box-sizing: border-box; -webkit-tap-highlight-color: transparent; }
+  body { margin:0; background:var(--bg); color:var(--ink); font: 17px/1.45 -apple-system, BlinkMacSystemFont, "SF Pro Text", system-ui, sans-serif; padding: env(safe-area-inset-top) 16px 40px; }
+  main { max-width: 760px; margin: 0 auto; }
+  h1 { font-size: 28px; letter-spacing: -0.02em; margin: 28px 0 4px; }
+  .sub { color: var(--mute); margin: 0 0 20px; font-size: 15px; }
+  section { background: var(--card); border: 1px solid var(--line); border-radius: 16px; padding: 18px; margin-bottom: 14px; }
+  h2 { font-size: 13px; text-transform: uppercase; letter-spacing: .08em; color: var(--mute); margin: 0 0 12px; font-weight: 600; }
+  .pick { display:block; text-align:center; border: 2px dashed var(--line); border-radius: 12px; padding: 26px 12px; cursor:pointer; font-weight:600; }
+  .pick small { display:block; font-weight:400; color:var(--mute); margin-top:4px; }
+  input[type=file] { display:none; }
+  .chips { display:flex; flex-wrap:wrap; gap:8px; }
+  .chip { border:1px solid var(--line); background:var(--chip); color:var(--ink); border-radius: 999px; padding: 9px 15px; font: inherit; font-size: 16px; font-variant-numeric: tabular-nums; min-width: 64px; }
+  .chip.on { background: var(--acc); border-color: var(--acc); color: var(--acc-ink); }
+  .row { display:flex; gap:10px; align-items:center; flex-wrap:wrap; margin-top: 12px; }
+  .row input[type=number] { font: inherit; width: 110px; padding: 9px 12px; border-radius: 10px; border:1px solid var(--line); background: var(--bg); color: var(--ink); }
+  select { font: inherit; padding: 9px 12px; border-radius: 10px; border:1px solid var(--line); background: var(--bg); color: var(--ink); }
+  label.chart { display:flex; gap:12px; align-items:center; padding: 10px 2px; border-bottom: 1px solid var(--line); }
+  label.chart:last-child { border-bottom: 0; }
+  label.chart input { width: 22px; height: 22px; accent-color: var(--acc); flex: none; }
+  label.chart span small { display:block; color: var(--mute); font-size: 13px; word-break: break-all; }
+  .toggle { display:flex; gap:10px; align-items:center; }
+  .toggle input { width: 22px; height: 22px; accent-color: var(--acc); }
+  button.main { width:100%; font: inherit; font-weight: 700; font-size: 18px; padding: 16px; border-radius: 14px; border: 0; background: var(--acc); color: var(--acc-ink); }
+  button.main:disabled { opacity: .4; }
+  button.sec { font: inherit; padding: 9px 14px; border-radius: 10px; border:1px solid var(--line); background: var(--chip); color: var(--ink); }
+  .bar { height: 8px; background: var(--chip); border-radius: 99px; overflow: hidden; margin-top: 14px; display:none; }
+  .bar div { height: 100%; width: 0; background: var(--acc); transition: width .15s; }
+  #status { margin-top: 10px; color: var(--mute); font-size: 15px; min-height: 1.4em; white-space: pre-wrap; }
+  #status.err { color: #e03131; }
+  #result { display:none; }
+  #result .btns { display:flex; gap:10px; flex-wrap:wrap; }
+  #result a, #result button { flex:1; text-align:center; text-decoration:none; font: inherit; font-weight: 600; padding: 14px; border-radius: 12px; border: 1px solid var(--line); background: var(--chip); color: var(--ink); }
+  .note { color: var(--mute); font-size: 14px; margin: 10px 0 0; }
+  .hidden { display:none !important; }
+</style>
+</head>
+<body>
+<main>
+  <h1>Beatmap Rate Changer</h1>
+  <p class="sub">Speeds up or slows down Malody (.mcz) and osu! (.osz) maps, music included. Everything runs on this device.</p>
+
+  <section>
+    <h2>1 · Map file</h2>
+    <label class="pick" for="file"><span id="pickLabel">Choose .mcz / .osz</span><small id="pickHint">Tap to open Files</small></label>
+    <input type="file" id="file">
+  </section>
+
+  <section id="chartsBox" class="hidden">
+    <h2>2 · Difficulties</h2>
+    <div id="charts"></div>
+  </section>
+
+  <section id="speedBox" class="hidden">
+    <h2>3 · Speeds</h2>
+    <div class="chips" id="speeds"></div>
+    <div class="row">
+      <input type="number" id="custom" step="0.01" min="0.25" max="4" placeholder="e.g. 1.15" inputmode="decimal">
+      <button class="sec" id="addCustom">Add speed</button>
+    </div>
+  </section>
+
+  <section id="optBox" class="hidden">
+    <h2>4 · Audio</h2>
+    <label class="toggle"><input type="checkbox" id="keepPitch" checked> Keep original pitch (off = nightcore style)</label>
+    <div class="row">
+      <span>Format</span>
+      <select id="format">
+        <option value="mp3-192">MP3 192 kbps</option>
+        <option value="mp3-256">MP3 256 kbps</option>
+        <option value="mp3-128">MP3 128 kbps</option>
+        <option value="wav">WAV (large, no encoder needed)</option>
+      </select>
+    </div>
+    <p class="note" id="mp3note"></p>
+  </section>
+
+  <section id="goBox" class="hidden">
+    <button class="main" id="go">Generate</button>
+    <div class="bar" id="bar"><div></div></div>
+    <div id="status"></div>
+  </section>
+
+  <section id="result">
+    <h2>Done</h2>
+    <div class="btns">
+      <button id="share">Share / Open in…</button>
+      <a id="download" download>Save to Files</a>
+    </div>
+    <p class="note">Use “Share” to send it straight to Malody or osu!, or save it and open it from the Files app.</p>
+  </section>
+</main>
+
+<!-- Pure logic, no DOM. Kept separate so it can be tested outside the browser. -->
+<script id="core">
+const Core = (() => {
+  // ---------- CRC32 ----------
+  const CRC_TABLE = new Uint32Array(256);
+  for (let n = 0; n < 256; n++) {
+    let c = n;
+    for (let k = 0; k < 8; k++) c = c & 1 ? 0xEDB88320 ^ (c >>> 1) : c >>> 1;
+    CRC_TABLE[n] = c >>> 0;
+  }
+  function crc32(u8) {
+    let c = 0xFFFFFFFF;
+    for (let i = 0; i < u8.length; i++) c = CRC_TABLE[(c ^ u8[i]) & 0xFF] ^ (c >>> 8);
+    return (c ^ 0xFFFFFFFF) >>> 0;
+  }
+
+  // ---------- ZIP reading ----------
+  function decodeName(bytes, flags) {
+    if (flags & 0x800) return new TextDecoder('utf-8').decode(bytes);
+    try { return new TextDecoder('utf-8', { fatal: true }).decode(bytes); } catch (e) {}
+    try { return new TextDecoder('gbk').decode(bytes); } catch (e) {}
+    return Array.from(bytes, b => String.fromCharCode(b)).join('');
+  }
+
+  function readZip(u8) {
+    const dv = new DataView(u8.buffer, u8.byteOffset, u8.byteLength);
+    let eocd = -1;
+    for (let i = u8.length - 22; i >= Math.max(0, u8.length - 65557); i--) {
+      if (dv.getUint32(i, true) === 0x06054b50) { eocd = i; break; }
+    }
+    if (eocd < 0) throw new Error('Not a valid zip file (.mcz/.osz are zip archives).');
+    const count = dv.getUint16(eocd + 10, true);
+    let p = dv.getUint32(eocd + 16, true);
+    if (p === 0xFFFFFFFF) throw new Error('ZIP64 archives are not supported.');
+    const entries = [];
+    for (let i = 0; i < count; i++) {
+      if (dv.getUint32(p, true) !== 0x02014b50) throw new Error('Corrupt zip central directory.');
+      const flags = dv.getUint16(p + 8, true);
+      const method = dv.getUint16(p + 10, true);
+      const time = dv.getUint16(p + 12, true);
+      const date = dv.getUint16(p + 14, true);
+      const crc = dv.getUint32(p + 16, true);
+      const csize = dv.getUint32(p + 20, true);
+      const usize = dv.getUint32(p + 24, true);
+      const nlen = dv.getUint16(p + 28, true);
+      const elen = dv.getUint16(p + 30, true);
+      const clen = dv.getUint16(p + 32, true);
+      const local = dv.getUint32(p + 42, true);
+      const nameBytes = u8.slice(p + 46, p + 46 + nlen);
+      const name = decodeName(nameBytes, flags);
+      const lnl = dv.getUint16(local + 26, true), lel = dv.getUint16(local + 28, true);
+      const dataOffset = local + 30 + lnl + lel;
+      entries.push({ name, nameBytes, flags, method, time, date, crc, csize, usize,
+                     raw: u8.subarray(dataOffset, dataOffset + csize), isDir: name.endsWith('/') });
+      p += 46 + nlen + elen + clen;
+    }
+    return entries;
+  }
+
+  async function inflateRaw(u8) {
+    const stream = new Blob([u8]).stream().pipeThrough(new DecompressionStream('deflate-raw'));
+    return new Uint8Array(await new Response(stream).arrayBuffer());
+  }
+
+  async function entryData(e) {
+    if (e.method === 0) return e.raw;
+    if (e.method === 8) return inflateRaw(e.raw);
+    throw new Error('Unsupported compression in ' + e.name);
+  }
+
+  // ---------- ZIP writing ----------
+  // Original entries are copied byte-for-byte (already compressed); new ones are stored.
+  function dosTime(d = new Date()) {
+    return { time: (d.getHours() << 11) | (d.getMinutes() << 5) | (d.getSeconds() >> 1),
+             date: ((d.getFullYear() - 1980) << 9) | ((d.getMonth() + 1) << 5) | d.getDate() };
+  }
+  function storedEntry(name, data) {
+    const t = dosTime();
+    return { name, nameBytes: new TextEncoder().encode(name), flags: 0x800, method: 0,
+             time: t.time, date: t.date, crc: crc32(data), csize: data.length, usize: data.length, raw: data };
+  }
+  function buildZip(entries) {
+    const parts = [], central = [];
+    let offset = 0;
+    for (const e of entries) {
+      const flags = e.flags & ~0x8; // sizes are known, no data descriptor
+      const h = new Uint8Array(30 + e.nameBytes.length), dv = new DataView(h.buffer);
+      dv.setUint32(0, 0x04034b50, true); dv.setUint16(4, 20, true); dv.setUint16(6, flags, true);
+      dv.setUint16(8, e.method, true); dv.setUint16(10, e.time, true); dv.setUint16(12, e.date, true);
+      dv.setUint32(14, e.crc, true); dv.setUint32(18, e.csize, true); dv.setUint32(22, e.usize, true);
+      dv.setUint16(26, e.nameBytes.length, true); dv.setUint16(28, 0, true);
+      h.set(e.nameBytes, 30);
+      const c = new Uint8Array(46 + e.nameBytes.length), cv = new DataView(c.buffer);
+      cv.setUint32(0, 0x02014b50, true); cv.setUint16(4, 20, true); cv.setUint16(6, 20, true);
+      cv.setUint16(8, flags, true); cv.setUint16(10, e.method, true); cv.setUint16(12, e.time, true);
+      cv.setUint16(14, e.date, true); cv.setUint32(16, e.crc, true); cv.setUint32(20, e.csize, true);
+      cv.setUint32(24, e.usize, true); cv.setUint16(28, e.nameBytes.length, true);
+      cv.setUint32(42, offset, true); c.set(e.nameBytes, 46);
+      parts.push(h, e.raw); central.push(c);
+      offset += h.length + e.raw.length;
+    }
+    const cdSize = central.reduce((s, c) => s + c.length, 0);
+    const end = new Uint8Array(22), ev = new DataView(end.buffer);
+    ev.setUint32(0, 0x06054b50, true); ev.setUint16(8, entries.length, true); ev.setUint16(10, entries.length, true);
+    ev.setUint32(12, cdSize, true); ev.setUint32(16, offset, true);
+    return [...parts, ...central, end];
+  }
+
+  // ---------- helpers ----------
+  const fmtSpeed = s => String(+(+s).toFixed(3));
+  const dirOf = p => p.includes('/') ? p.slice(0, p.lastIndexOf('/') + 1) : '';
+  const stripBom = s => s.charCodeAt(0) === 0xFEFF ? s.slice(1) : s;
+
+  // ---------- Malody .mc ----------
+  // Notes are positioned in beats, so scaling every BPM rescales the whole chart.
+  // Only the audio offset (ms) of the sound note needs dividing.
+  function mcInfo(json) {
+    const sn = (json.note || []).find(n => 'sound' in n);
+    return { version: (json.meta && json.meta.version) || '(unnamed)', audio: sn ? sn.sound : null };
+  }
+  function transformMc(json, speed, audioName) {
+    const d = JSON.parse(JSON.stringify(json));
+    if (d.meta) {
+      delete d.meta.id;
+      d.meta.version = (d.meta.version || '') + ' x' + fmtSpeed(speed);
+      d.meta.time = Math.floor(Date.now() / 1000);
+      if (typeof d.meta.preview === 'number') d.meta.preview = Math.round(d.meta.preview / speed);
+    }
+    for (const t of d.time || []) t.bpm = t.bpm * speed;
+    const sn = (d.note || []).find(n => 'sound' in n);
+    if (sn) {
+      if (typeof sn.offset === 'number') sn.offset = Math.round(sn.offset / speed);
+      sn.sound = audioName;
+    }
+    return d;
+  }
+
+  // ---------- osu! .osu ----------
+  // Line-by-line edit so everything we don't touch is preserved exactly.
+  function osuInfo(text) {
+    let version = '(unnamed)', audio = null, sec = '';
+    for (const raw of stripBom(text).split(/\r?\n/)) {
+      const line = raw.trim();
+      if (/^\[.+\]$/.test(line)) { sec = line.slice(1, -1); continue; }
+      const m = line.match(/^([A-Za-z]+)\s*:\s*(.*)$/);
+      if (!m) continue;
+      if (sec === 'General' && m[1] === 'AudioFilename') audio = m[2];
+      if (sec === 'Metadata' && m[1] === 'Version') version = m[2];
+    }
+    return { version, audio };
+  }
+  function transformOsu(text, speed, audioName) {
+    const eol = text.includes('\r\n') ? '\r\n' : '\n';
+    const T = v => String(Math.round(parseFloat(v) / speed));
+    const sp = fmtSpeed(speed);
+    let sec = '';
+    const out = stripBom(text).split(/\r?\n/).map(line => {
+      const tl = line.trim();
+      if (/^\[.+\]$/.test(tl)) { sec = tl.slice(1, -1); return line; }
+      if (tl === '' || tl.startsWith('//')) return line;
+      const kv = tl.match(/^([A-Za-z]+)(\s*:\s*)(.*)$/);
+      if (sec === 'General' && kv) {
+        if (kv[1] === 'AudioFilename') return kv[1] + kv[2] + audioName;
+        if (kv[1] === 'PreviewTime') { const v = parseInt(kv[3]); return kv[1] + kv[2] + (v >= 0 ? T(v) : v); }
+        return line;
+      }
+      if (sec === 'Editor' && kv && kv[1] === 'Bookmarks')
+        return kv[1] + kv[2] + kv[3].split(',').filter(s => s.trim() !== '').map(T).join(',');
+      if (sec === 'Metadata' && kv) {
+        if (kv[1] === 'Version') return kv[1] + kv[2] + kv[3] + ' x' + sp;
+        if (kv[1] === 'BeatmapID') return kv[1] + kv[2] + '0';
+        if (kv[1] === 'BeatmapSetID') return kv[1] + kv[2] + '-1';
+        return line;
+      }
+      if (sec === 'Events') {
+        const f = line.split(',');
+        const lead = line.match(/^[ _]*/)[0];
+        if (lead.length) { // storyboard command; nested loop times are relative, which scale the same way
+          const type = f[0].trim();
+          if (type === 'L') { f[1] = T(f[1]); }
+          else if (f.length > 3) { f[2] = T(f[2]); if (f[3].trim() !== '') f[3] = T(f[3]); }
+          return f.join(',');
+        }
+        const k = f[0];
+        if ((k === '1' || k === 'Video' || k === '5' || k === 'Sample') && f.length > 1) f[1] = T(f[1]);
+        else if ((k === '2' || k === 'Break') && f.length > 2) { f[1] = T(f[1]); f[2] = T(f[2]); }
+        return f.join(',');
+      }
+      if (sec === 'TimingPoints') {
+        const f = tl.split(',');
+        if (f.length < 2) return line;
+        f[0] = T(f[0]);
+        const bl = parseFloat(f[1]);
+        if (bl > 0) f[1] = String(bl / speed); // negative = slider velocity multiplier, unaffected
+        return f.join(',');
+      }
+      if (sec === 'HitObjects') {
+        const f = tl.split(',');
+        if (f.length < 4) return line;
+        f[2] = T(f[2]);
+        const type = parseInt(f[3]);
+        if ((type & 8) && f.length > 5) f[5] = T(f[5]);            // spinner end time
+        if ((type & 128) && f.length > 5) {                         // mania hold end time
+          const g = f[5].split(':'); g[0] = T(g[0]); f[5] = g.join(':');
+        }
+        return f.join(',');
+      }
+      return line;
+    });
+    return out.join(eol);
+  }
+
+  // ---------- Time stretch (WSOLA, pitch preserved; same idea as ffmpeg atempo) ----------
+  const tick = () => new Promise(r => setTimeout(r, 0));
+  async function wsola(chs, sr, speed, onProg) {
+    if (Math.abs(speed - 1) < 1e-9) return chs.map(c => c.slice());
+    let W = 256; while (W < sr * 0.046) W <<= 1;   // ~46 ms frames (2048 @ 44.1k)
+    const H = W >> 1, delta = W >> 2, D = 8;
+    const n = chs[0].length, nc = chs.length;
+    const outLen = Math.ceil(n / speed);
+    const win = new Float32Array(W);
+    for (let i = 0; i < W; i++) win[i] = 0.5 - 0.5 * Math.cos(2 * Math.PI * i / W);
+    const mono = new Float32Array(n);
+    for (const c of chs) for (let i = 0; i < n; i++) mono[i] += c[i] / nc;
+    const md = new Float32Array(Math.ceil(n / D));
+    for (let i = 0; i < n; i++) md[(i / D) | 0] += mono[i] / D;
+    const at = (a, i) => (i >= 0 && i < a.length) ? a[i] : 0;
+    const out = chs.map(() => new Float32Array(outLen + W));
+    const wsum = new Float32Array(outLen + W);
+    const Ha = H * speed, frames = Math.ceil(outLen / H) + 1;
+    const R = delta / D, L = H / D;
+    let prev = 0;
+    for (let k = 0; k < frames; k++) {
+      const nominal = Math.round(k * Ha);
+      let pos = nominal;
+      if (k > 0) {
+        const target = prev + H; // where a seamless continuation of the last frame would start
+        const tb = Math.round(target / D), nb = Math.round(nominal / D);
+        let best = -Infinity, bd = 0;
+        for (let t = 0; t <= 2 * R; t++) {          // coarse search, offsets ordered 0, +1, -1, +2...
+          const dd = (t & 1) ? (t + 1) >> 1 : -(t >> 1);
+          let s = 0, e = 0;
+          for (let j = 0; j < L; j++) { const x = at(md, nb + dd + j); s += x * at(md, tb + j); e += x * x; }
+          const sc = e > 1e-12 ? s / Math.sqrt(e) : 0;
+          if (sc > best) { best = sc; bd = dd; }
+        }
+        const c0 = nominal + bd * D; best = -Infinity; pos = c0;
+        for (let t = 0; t <= 2 * D; t++) {          // fine search at full rate
+          const d = c0 + ((t & 1) ? (t + 1) >> 1 : -(t >> 1));
+          if (d < nominal - delta || d > nominal + delta) continue;
+          let s = 0, e = 0;
+          for (let j = 0; j < H; j++) { const x = at(mono, d + j); s += x * at(mono, target + j); e += x * x; }
+          const sc = e > 1e-12 ? s / Math.sqrt(e) : 0;
+          if (sc > best) { best = sc; pos = d; }
+        }
+      }
+      const o = k * H;
+      for (let c = 0; c < nc; c++) {
+        const src = chs[c], dst = out[c];
+        for (let i = 0; i < W; i++) dst[o + i] += at(src, pos + i) * win[i];
+      }
+      for (let i = 0; i < W; i++) wsum[o + i] += win[i];
+      prev = pos;
+      if (k % 400 === 0) { if (onProg) onProg(k / frames); await tick(); }
+    }
+    for (let c = 0; c < nc; c++) {
+      const dst = out[c];
+      for (let i = 0; i < outLen; i++) if (wsum[i] > 1e-3) dst[i] /= wsum[i];
+    }
+    return out.map(a => a.slice(0, outLen));
+  }
+
+  // ---------- WAV ----------
+  function encodeWav(chs, sr) {
+    const nc = chs.length, n = chs[0].length, buf = new ArrayBuffer(44 + n * nc * 2), dv = new DataView(buf);
+    const w = (o, s) => { for (let i = 0; i < s.length; i++) dv.setUint8(o + i, s.charCodeAt(i)); };
+    w(0, 'RIFF'); dv.setUint32(4, 36 + n * nc * 2, true); w(8, 'WAVE'); w(12, 'fmt ');
+    dv.setUint32(16, 16, true); dv.setUint16(20, 1, true); dv.setUint16(22, nc, true);
+    dv.setUint32(24, sr, true); dv.setUint32(28, sr * nc * 2, true); dv.setUint16(32, nc * 2, true);
+    dv.setUint16(34, 16, true); w(36, 'data'); dv.setUint32(40, n * nc * 2, true);
+    let o = 44;
+    for (let i = 0; i < n; i++) for (let c = 0; c < nc; c++) {
+      const v = Math.max(-1, Math.min(1, chs[c][i]));
+      dv.setInt16(o, v < 0 ? v * 32768 : v * 32767, true); o += 2;
+    }
+    return new Uint8Array(buf);
+  }
+
+  return { crc32, readZip, entryData, storedEntry, buildZip, fmtSpeed, dirOf, stripBom,
+           mcInfo, transformMc, osuInfo, transformOsu, wsola, encodeWav, tick };
+})();
+if (typeof module !== 'undefined') module.exports = Core;
+</script>
+
+<script>
+(() => {
+  const $ = id => document.getElementById(id);
+  const DEFAULT_SPEEDS = [0.5, 0.6, 0.65, 0.7, 0.75, 0.8, 0.85, 0.9, 0.95, 1.05, 1.1, 1.15, 1.2, 1.25, 1.3, 1.35, 1.4, 1.5, 1.6, 1.7, 1.8, 2.0];
+  const state = { file: null, entries: [], charts: [], speeds: new Set(), allSpeeds: [...DEFAULT_SPEEDS], resultBlob: null, resultName: '' };
+
+  // ----- MP3 encoder (lamejs) loaded from CDN; WAV works without it -----
+  let lameReady = false;
+  const s = document.createElement('script');
+  s.src = 'https://cdn.jsdelivr.net/npm/lamejs@1.2.1/lame.min.js';
+  s.onload = () => { lameReady = !!window.lamejs; $('mp3note').textContent = ''; };
+  s.onerror = () => {
+    $('mp3note').textContent = 'MP3 encoder could not load (offline?). Falling back to WAV.';
+    $('format').value = 'wav';
+  };
+  document.head.appendChild(s);
+
+  const status = (msg, err) => { $('status').textContent = msg; $('status').classList.toggle('err', !!err); };
+  const progress = p => { $('bar').style.display = p == null ? 'none' : 'block'; $('bar').firstElementChild.style.width = ((p || 0) * 100).toFixed(1) + '%'; };
+
+  function renderSpeeds() {
+    const box = $('speeds'); box.innerHTML = '';
+    state.allSpeeds.sort((a, b) => a - b);
+    for (const sp of state.allSpeeds) {
+      const b = document.createElement('button');
+      b.className = 'chip' + (state.speeds.has(sp) ? ' on' : '');
+      b.textContent = '×' + Core.fmtSpeed(sp);
+      b.onclick = () => { state.speeds.has(sp) ? state.speeds.delete(sp) : state.speeds.add(sp); renderSpeeds(); updateGo(); };
+      box.appendChild(b);
+    }
+  }
+  $('addCustom').onclick = () => {
+    const v = +(+$('custom').value).toFixed(3);
+    if (!(v >= 0.25 && v <= 4) || v === 1) { status('Enter a speed between 0.25 and 4 (not 1).', true); return; }
+    if (!state.allSpeeds.includes(v)) state.allSpeeds.push(v);
+    state.speeds.add(v); $('custom').value = ''; status(''); renderSpeeds(); updateGo();
+  };
+
+  function updateGo() {
+    const n = state.charts.filter(c => c.on).length;
+    $('go').disabled = !n || !state.speeds.size;
+    $('go').textContent = `Generate ${n * state.speeds.size || ''} ${n * state.speeds.size === 1 ? 'chart' : 'charts'}`.replace('  ', ' ');
+  }
+
+  $('file').onchange = async ev => {
+    const f = ev.target.files[0]; if (!f) return;
+    $('result').style.display = 'none';
+    try {
+      const u8 = new Uint8Array(await f.arrayBuffer());
+      const entries = Core.readZip(u8);
+      const charts = [];
+      for (const e of entries) {
+        if (e.isDir || e.name.startsWith('__MACOSX/')) continue;
+        const low = e.name.toLowerCase();
+        if (!low.endsWith('.mc') && !low.endsWith('.osu')) continue;
+        const text = new TextDecoder('utf-8').decode(await Core.entryData(e));
+        if (low.endsWith('.mc')) {
+          const json = JSON.parse(Core.stripBom(text)), info = Core.mcInfo(json);
+          charts.push({ type: 'mc', entry: e, json, ...info, on: true });
+        } else {
+          charts.push({ type: 'osu', entry: e, text, ...Core.osuInfo(text), on: true });
+        }
+      }
+      if (!charts.length) throw new Error('No .mc or .osu charts found in this file.');
+      Object.assign(state, { file: f, entries, charts });
+      $('pickLabel').textContent = f.name;
+      $('pickHint').textContent = `${charts.length} difficult${charts.length === 1 ? 'y' : 'ies'} found · tap to choose another`;
+      const box = $('charts'); box.innerHTML = '';
+      for (const c of charts) {
+        const l = document.createElement('label'); l.className = 'chart';
+        const cb = document.createElement('input'); cb.type = 'checkbox'; cb.checked = true;
+        cb.onchange = () => { c.on = cb.checked; updateGo(); };
+        const sp = document.createElement('span');
+        sp.textContent = c.version;
+        const sm = document.createElement('small'); sm.textContent = `${c.type === 'mc' ? 'Malody' : 'osu!'} · ${c.entry.name}`;
+        sp.appendChild(sm); l.append(cb, sp); box.appendChild(l);
+      }
+      for (const id of ['chartsBox', 'speedBox', 'optBox', 'goBox']) $(id).classList.remove('hidden');
+      status(''); progress(null); updateGo();
+    } catch (err) { status(err.message, true); }
+  };
+
+  async function decodeAudio(bytes) {
+    const AC = window.AudioContext || window.webkitAudioContext;
+    const ctx = new AC({ sampleRate: 44100 });
+    try {
+      const buf = await ctx.decodeAudioData(bytes.slice().buffer);
+      const chs = []; for (let c = 0; c < Math.min(2, buf.numberOfChannels); c++) chs.push(buf.getChannelData(c).slice());
+      return { chs, sr: buf.sampleRate };
+    } finally { ctx.close && ctx.close(); }
+  }
+
+  async function resample(audio, speed) { // pitch follows speed ("nightcore")
+    const len = Math.ceil(audio.chs[0].length / speed);
+    const OAC = window.OfflineAudioContext || window.webkitOfflineAudioContext;
+    const ctx = new OAC(audio.chs.length, len, audio.sr);
+    const b = ctx.createBuffer(audio.chs.length, audio.chs[0].length, audio.sr);
+    audio.chs.forEach((c, i) => b.copyToChannel(c, i));
+    const src = ctx.createBufferSource(); src.buffer = b; src.playbackRate.value = speed;
+    src.connect(ctx.destination); src.start();
+    const r = await ctx.startRendering();
+    return audio.chs.map((_, i) => r.getChannelData(i).slice());
+  }
+
+  async function encodeMp3(chs, sr, kbps, onProg) {
+    // lamejs writes no gapless header, so decoders would play it ~1105 samples late.
+    // Trim that much from the front to keep the audio in sync with the chart.
+    const skip = 1105;
+    chs = chs.map(c => c.subarray(Math.min(skip, c.length)));
+    const nc = chs.length, n = chs[0].length, enc = new lamejs.Mp3Encoder(nc, sr, kbps);
+    const parts = [], block = 1152 * 32;
+    const i16 = (f, a, b) => { const o = new Int16Array(b - a); for (let i = a; i < b; i++) { const v = Math.max(-1, Math.min(1, f[i])); o[i - a] = v < 0 ? v * 32768 : v * 32767; } return o; };
+    for (let i = 0, k = 0; i < n; i += block, k++) {
+      const e = Math.min(n, i + block);
+      const out = nc > 1 ? enc.encodeBuffer(i16(chs[0], i, e), i16(chs[1], i, e)) : enc.encodeBuffer(i16(chs[0], i, e));
+      if (out.length) parts.push(new Uint8Array(out));
+      if (k % 8 === 0) { onProg(i / n); await Core.tick(); }
+    }
+    const end = enc.flush(); if (end.length) parts.push(new Uint8Array(end));
+    const total = parts.reduce((s, p) => s + p.length, 0), res = new Uint8Array(total);
+    let o = 0; for (const p of parts) { res.set(p, o); o += p.length; }
+    return res;
+  }
+
+  $('go').onclick = async () => {
+    const charts = state.charts.filter(c => c.on), speeds = [...state.speeds].sort((a, b) => a - b);
+    let fmt = $('format').value;
+    if (fmt.startsWith('mp3') && !lameReady) { fmt = 'wav'; $('format').value = 'wav'; }
+    const ext = fmt === 'wav' ? 'wav' : 'mp3', kbps = fmt === 'wav' ? 0 : +fmt.split('-')[1];
+    const keepPitch = $('keepPitch').checked;
+    $('go').disabled = true; $('result').style.display = 'none';
+    const byName = new Map(state.entries.map(e => [e.name.toLowerCase(), e]));
+    const used = new Set(state.entries.map(e => e.name.toLowerCase()));
+    const uniq = name => { let n = name, i = 2; while (used.has(n.toLowerCase())) n = name.replace(/(\.[^.]+)$/, `_${i++}$1`); used.add(n.toLowerCase()); return n; };
+    const decoded = new Map(), made = new Map(), added = [];
+    const steps = charts.length * speeds.length; let step = 0;
+    try {
+      for (const sp of speeds) {
+        for (const c of charts) {
+          const label = `${c.version} ×${Core.fmtSpeed(sp)}`;
+          const dir = Core.dirOf(c.entry.name);
+          if (!c.audio) throw new Error(`${c.version}: chart has no audio file listed.`);
+          const audioPath = dir + c.audio, key = audioPath.toLowerCase() + '|' + sp;
+          const ae = byName.get(audioPath.toLowerCase());
+          if (!ae) throw new Error(`Audio file "${audioPath}" is missing from the archive.`);
+          let newAudio = made.get(key);
+          if (!newAudio) {
+            const sub = (p, w0, w) => progress((step + w0 + p * w) / steps);
+            if (!decoded.has(ae.name)) { status(`Decoding ${c.audio}…`); decoded.set(ae.name, await decodeAudio(await Core.entryData(ae))); }
+            const audio = decoded.get(ae.name);
+            status(`Stretching audio for ${label}…`);
+            const chs = keepPitch ? await Core.wsola(audio.chs, audio.sr, sp, p => sub(p, 0, 0.5)) : await resample(audio, sp);
+            status(`Encoding ${ext.toUpperCase()} for ${label}…`);
+            const bytes = ext === 'wav' ? Core.encodeWav(chs, audio.sr) : await encodeMp3(chs, audio.sr, kbps, p => sub(p, 0.5, 0.5));
+            const base = c.audio.replace(/^.*\//, '').replace(/\.[^.]+$/, '');
+            const relName = uniq(dir + `${base}_x${Core.fmtSpeed(sp)}.${ext}`).slice(dir.length);
+            added.push(Core.storedEntry(dir + relName, bytes));
+            made.set(key, newAudio = relName);
+          }
+          const chartBase = c.entry.name.slice(dir.length).replace(/\.[^.]+$/, '');
+          const chartExt = c.type === 'mc' ? 'mc' : 'osu';
+          const chartName = uniq(dir + `${chartBase}_x${Core.fmtSpeed(sp)}.${chartExt}`);
+          const text = c.type === 'mc' ? JSON.stringify(Core.transformMc(c.json, sp, newAudio)) : Core.transformOsu(c.text, sp, newAudio);
+          added.push(Core.storedEntry(chartName, new TextEncoder().encode(text)));
+          step++; progress(step / steps);
+        }
+      }
+      status('Packing…');
+      const keep = state.entries.filter(e => !e.isDir);
+      const parts = Core.buildZip([...keep, ...added]);
+      const origExt = (state.file.name.match(/\.([^.]+)$/) || [, 'zip'])[1];
+      const stem = state.file.name.replace(/\.[^.]+$/, '');
+      state.resultName = `${stem} (${speeds.map(s => 'x' + Core.fmtSpeed(s)).join(' ')}).${origExt}`;
+      state.resultBlob = new Blob(parts, { type: 'application/zip' });
+      const a = $('download');
+      if (a.href) URL.revokeObjectURL(a.href);
+      a.href = URL.createObjectURL(state.resultBlob); a.download = state.resultName;
+      $('share').classList.toggle('hidden', !navigator.canShare);
+      $('result').style.display = 'block';
+      status(`Added ${steps} chart${steps === 1 ? '' : 's'} · ${(state.resultBlob.size / 1048576).toFixed(1)} MB`);
+      $('result').scrollIntoView({ behavior: 'smooth' });
+    } catch (err) {
+      console.error(err); status('Failed: ' + err.message, true); progress(null);
+    } finally { $('go').disabled = false; }
+  };
+
+  $('share').onclick = async () => {
+    const file = new File([state.resultBlob], state.resultName, { type: 'application/octet-stream' });
+    if (navigator.canShare && navigator.canShare({ files: [file] })) {
+      try { await navigator.share({ files: [file] }); } catch (e) { if (e.name !== 'AbortError') status('Share failed: ' + e.message, true); }
+    } else { $('download').click(); }
+  };
+
+  renderSpeeds(); updateGo();
+})();
+</script>
+</body>
+</html>
